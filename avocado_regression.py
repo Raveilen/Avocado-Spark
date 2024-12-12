@@ -1,6 +1,17 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, month, when, dayofmonth
-from pyspark.ml.feature import StringIndexer, OneHotEncoder
+from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler, StandardScaler
+
+from pyspark.ml.regression import RandomForestRegressor
+from pyspark.ml.evaluation import RegressionEvaluator
+
+'''
+TO DO:
+- Improve Random Forest Regresion Results
+- Prepare Model For XGBoost
+- Compare results between models (choose better)
+- Function for sampling data from dataset
+'''
 
 def replace_date_with_seasons(df):
 
@@ -24,10 +35,10 @@ def replace_date_with_seasons(df):
         (col("month").isin(10, 11)) | 
         ((col("month") == 12) & (col("day") <= 20)), 1).otherwise(0))
 
-    df = df.withColumn("Winter", when(
-        ((col("month") == 12) & (col("day") >= 21)) | 
-        (col("month").isin(1, 2)) | 
-        ((col("month") == 3) & (col("day") <= 19)), 1).otherwise(0))
+    # df = df.withColumn("Winter", when(
+    #     ((col("month") == 12) & (col("day") >= 21)) | 
+    #     (col("month").isin(1, 2)) | 
+    #     ((col("month") == 3) & (col("day") <= 19)), 1).otherwise(0))
     
     #remove Date, month and day columns
     
@@ -78,6 +89,17 @@ def remove_outliers_with_IQR(df, features):
 
     return df_filtered
 
+def random_forest_regression_test(df_train, df_eval):
+
+    rf = RandomForestRegressor(featuresCol='features', labelCol='AveragePrice', numTrees=100)
+    rf_model = rf.fit(df_train)
+
+    rf_pred = rf_model.transform(df_eval)
+
+    evaluator = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="rmse")
+    rf_rmse = evaluator.evaluate(rf_pred)
+
+    return rf_rmse
     
 
 
@@ -93,24 +115,48 @@ if __name__ == '__main__' :
 
     df = replace_date_with_seasons(df)
     df = encode_wit_one_hot(df,"type")
-    df = encode_wit_one_hot(df, "region")
+    #df = encode_wit_one_hot(df, "region")
 
     df = df.drop("type", "region")
-
-    #zastanwić się czy rok też wyrzucić
 
     df = df.drop("4046", "4225", "4770", "Small Bags", "Large Bags", "XLarge Bags")
 
     features = ["Total Volume", "Total Bags"]
     df = remove_outliers_with_IQR(df, features)
 
-
     #TRAIN TEST SPLIT
 
-    X = df.drop("AveragePrice")
-    y = df.select("AveragePrice")
+    df_train, df_eval = df.randomSplit([0.67, 0.33], 42)
+
+    #COMBINING FEATURES
+
+    vect = VectorAssembler(inputCols=df.columns[1:], outputCol="features")
+    df_train = vect.transform(df_train)
+    df_eval = vect.transform(df_eval)
+
+    df_train = df_train.select("AveragePrice", "features")
+    df_train.show(10)
+
+    #FEATURE SCALING
+
+    scaler = StandardScaler(inputCol="features", outputCol="scaledFeatures")
+    scaler_model = scaler.fit(df_train)
+    df_train = scaler_model.transform(df_train)
+    df_eval = scaler_model.transform(df_eval)
+
+    df_train = df_train.select("AveragePrice", "features", "scaledFeatures")
+
+    df_train.show(10)
+
+    #RANDOM FOREST REGRESSOR MODEL
+
+    rf_rmse = random_forest_regression_test(df_train, df_eval)
+    print(f"RandomForest RMSE: {rf_rmse}")
+
+    #XGBoost
+    #...
 
     spark.sparkContext.stop()
 
-    #df.show(10)
+    
 
