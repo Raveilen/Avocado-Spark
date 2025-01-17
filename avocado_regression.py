@@ -7,6 +7,8 @@ from pyspark.ml.evaluation import RegressionEvaluator
 
 '''
 TO DO:
+-- try regression and xgboost
+- Add Cross-validation
 - Improve Random Forest Regresion Results
 - Prepare Model For XGBoost
 - Compare results between models (choose better)
@@ -77,7 +79,7 @@ def remove_outliers_with_IQR(df, features):
         IQR = Q3 - Q1
 
         lower_limit = Q1 - 1.5 * IQR
-        upper_limit = Q1 + 1.5 * IQR
+        upper_limit = Q3 + 1.5 * IQR
 
         boundaries[feature] = (lower_limit, upper_limit)
 
@@ -91,15 +93,27 @@ def remove_outliers_with_IQR(df, features):
 
 def random_forest_regression_test(df_train, df_eval):
 
-    rf = RandomForestRegressor(featuresCol='features', labelCol='AveragePrice', numTrees=100)
+    rf = RandomForestRegressor(featuresCol='features', labelCol='AveragePrice', numTrees=100, maxDepth=5, maxBins=70)
     rf_model = rf.fit(df_train)
 
     rf_pred = rf_model.transform(df_eval)
 
-    evaluator = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="rmse")
-    rf_rmse = evaluator.evaluate(rf_pred)
+    rf_pred.show(10)
 
-    return rf_rmse
+    evaluator_rmse = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="rmse")
+    rf_rmse = evaluator_rmse.evaluate(rf_pred)
+
+    evaluator_r2 = RegressionEvaluator(labelCol="AveragePrice")
+    rf_r2 = evaluator_r2.evaluate(rf_pred, {evaluator_r2.metricName: "r2"})
+
+    evaluator_mae = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="mae")
+    rf_mae = evaluator_mae.evaluate(rf_pred)
+
+    print(f"RandomForest RMSE: {rf_rmse}")
+    print(f"RandomForest R2: {rf_r2}")
+    print(f"RandomForest MAE: {rf_mae}")
+
+    return (rf_rmse, rf_r2, rf_mae)
     
 
 
@@ -114,19 +128,32 @@ if __name__ == '__main__' :
     df = df.drop("Unnamed: 0")
 
     df = replace_date_with_seasons(df)
-    df = encode_wit_one_hot(df,"type")
+    #df = encode_wit_one_hot(df,"type")
     #df = encode_wit_one_hot(df, "region")
+
+    region_idx = StringIndexer(inputCol='region', outputCol='regionLabel')
+    region_idx_model = region_idx.fit(df)
+    df = region_idx_model.transform(df)
+
+    type_idx = StringIndexer(inputCol='type', outputCol='typeLabel')
+    type_idx_model = type_idx.fit(df)
+    df = type_idx_model.transform(df)
 
     df = df.drop("type", "region")
 
-    df = df.drop("4046", "4225", "4770", "Small Bags", "Large Bags", "XLarge Bags")
+    df = df.drop("4046", "4225", "4770", "Small Bags", "Large Bags", "XLarge Bags", "year")
+
+    #df = df.select("AveragePrice", "Total Volume", "Total Bags")
+
+    df.show(10)
 
     features = ["Total Volume", "Total Bags"]
-    df = remove_outliers_with_IQR(df, features)
+
+    #df = remove_outliers_with_IQR(df, features)
 
     #TRAIN TEST SPLIT
 
-    df_train, df_eval = df.randomSplit([0.67, 0.33], 42)
+    df_train, df_eval = df.randomSplit([0.8, 0.2], 42)
 
     #COMBINING FEATURES
 
@@ -150,11 +177,10 @@ if __name__ == '__main__' :
 
     #RANDOM FOREST REGRESSOR MODEL
 
-    rf_rmse = random_forest_regression_test(df_train, df_eval)
-    print(f"RandomForest RMSE: {rf_rmse}")
+    results = random_forest_regression_test(df_train, df_eval)
 
     #XGBoost
-    #...
+    ...
 
     spark.sparkContext.stop()
 
