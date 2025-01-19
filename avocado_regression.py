@@ -9,6 +9,9 @@ from pyspark.ml.regression import LinearRegression
 from pyspark.ml.regression import RandomForestRegressor
 from pyspark.ml.evaluation import RegressionEvaluator
 
+from xgboost import XGBRegressor
+from xgboost.spark import SparkXGBRegressor
+
 class RegressionModels(Enum):
     LINEAR_REGRESSION = 1
     RANDOM_FOREST = 2
@@ -21,8 +24,7 @@ df = spark.read.csv("Augmented_avocado.csv", sep = ",", header=True, inferSchema
 numerical_features = ["Total Volume", "4046", "4225", "4770", "Total Bags", "year", "month"]
 input_features = list(numerical_features)
 input_features.append("type_encoded")
-model = RegressionModels.RANDOM_FOREST
-batch_size = 12 #data portion which is given to Model to conclude results
+model = RegressionModels.XGBOOST
 
 
 #functions
@@ -91,7 +93,7 @@ def linear_regression_preprocessing():
     
     return preprocessed_df
 
-def random_forest_processing(): #we skipped here standard scaler because it is not needed for RandomForest Model
+def random_forest_and_xgb_processing(): #we skipped here standard scaler because it is not needed for RandomForest Model
     #create features vector 
     assemlber = VectorAssembler(inputCols=input_features, outputCol="features")
 
@@ -120,13 +122,12 @@ if __name__ == '__main__' :
         estimator = LinearRegression(featuresCol="features", labelCol="AveragePrice")
 
     elif (model == RegressionModels.RANDOM_FOREST):
-        preprocessed_df = random_forest_processing()
+        preprocessed_df = random_forest_and_xgb_processing()
         estimator = RandomForestRegressor(featuresCol="features", labelCol="AveragePrice", numTrees=100)
 
     elif (model == RegressionModels.XGBOOST):
-        #XGboost here
-        pass
-
+        preprocessed_df = random_forest_and_xgb_processing()
+        estimator = SparkXGBRegressor(features_col="features", label_col="AveragePrice", prediction_col="prediction", maxDepth=6, eta=0.1, numRound=100, objective="reg:squarederror")
     else:
         #test block
         df.select("Date").groupBy("Date").count().orderBy("Date").show()
