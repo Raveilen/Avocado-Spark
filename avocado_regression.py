@@ -19,42 +19,28 @@ class RegressionModels(Enum):
 spark = SparkSession.builder.appName("avocado_price_prediction").getOrCreate()
 df = spark.read.csv("Augmented_avocado.csv", sep = ",", header=True, inferSchema = True).drop("Unnamed: 0")
 numerical_features = ["Total Volume", "4046", "4225", "4770", "Total Bags", "year", "month"]
-features = numerical_features.copy().append("type_encoded")
-model = RegressionModels.LINEAR_REGRESSION
+input_features = list(numerical_features)
+input_features.append("type_encoded")
+model = RegressionModels.RANDOM_FOREST
 batch_size = 12 #data portion which is given to Model to conclude results
 
 
-'''
-TO DO:
--- try regression and xgboost
-- Add Cross-validation
-- Improve Random Forest Regresion Results
-- Prepare Model For XGBoost
-- Compare results between models (choose better)
-- Function for sampling data from dataset
-'''
+#functions
+def IQR():
 
-def linear_regression_data_preprocessing():
+    quantiles = df.approxQuantile("AveragePrice", [0.25, 0.75], 0.05)
+    Q1 = quantiles[0]
+    Q3 = quantiles[1]
 
-    #scale numerical features
-    numerical_assembler = VectorAssembler(inputCols=numerical_features, outputCol="numerical_features")
-    scaler = StandardScaler(inputCol="numerical_features", outputCol="scaled_numerical_features", withMean=True, withStd=True)
+    IQR = Q3 - Q1
 
-    #encode categorical features
-    indexer = StringIndexer(inputCol="type", outputCol="type_index")
-    encoder = OneHotEncoder(inputCol="type_index", outputCol="type_encoded")
+    lower_limit = Q1 - 1.5 * IQR
+    upper_limit = Q3 + 1.5 * IQR
 
-    #create features vector 
-    final_assembler = VectorAssembler(inputCols=["scaled_numerical_features", "type_encoded"], outputCol="features")
+    # Filter out outliers
+    filtered_df = df.filter((sql_fun.col("AveragePrice") >= lower_limit) & (sql_fun.col("AveragePrice") <= upper_limit))
 
-    #create processing pipeline
-    pipeline = Pipeline(stages=[numerical_assembler, scaler, indexer, encoder, final_assembler])
-
-    preprocessed_df = pipeline.fit(df).transform(df)
-    
-    return preprocessed_df
-
-    
+    return filtered_df
 
 def replace_date_with_seasons(df):
 
@@ -89,139 +75,95 @@ def replace_date_with_seasons(df):
 
     return df_seasons
 
+def linear_regression_preprocessing():
 
-def remove_outliers_with_IQR(df, features):
+    #scale numerical features
+    numerical_assembler = VectorAssembler(inputCols=numerical_features, outputCol="numerical_features")
+    scaler = StandardScaler(inputCol="numerical_features", outputCol="scaled_numerical_features", withMean=True, withStd=True)
 
-    boundaries = {}
+    #create features vector 
+    final_assembler = VectorAssembler(inputCols=["scaled_numerical_features", "type_encoded"], outputCol="features")
 
-    for feature in features:
+    #create processing pipeline
+    pipeline = Pipeline(stages=[numerical_assembler, scaler, indexer, encoder, final_assembler])
 
-        quantiles = df.approxQuantile(feature, [0.25, 0.75], 0.01)
-        Q1 = quantiles[0]
-        Q3 = quantiles[1]
-
-        IQR = Q3 - Q1
-
-        lower_limit = Q1 - 1.5 * IQR
-        upper_limit = Q3 + 1.5 * IQR
-
-        boundaries[feature] = (lower_limit, upper_limit)
-
-    #create filter
-    filter_cond = " AND ".join( [ f'(`{feature}` >= {boundaries[feature][0]} AND `{feature}` <= {boundaries[feature][1]})' for feature in features ] )
+    preprocessed_df = pipeline.fit(df).transform(df)
     
-    #filter dataset from outliers
-    df_filtered = df.filter(filter_cond)
+    return preprocessed_df
 
-    return df_filtered
+def random_forest_processing(): #we skipped here standard scaler because it is not needed for RandomForest Model
+    #create features vector 
+    assemlber = VectorAssembler(inputCols=input_features, outputCol="features")
 
-def random_forest_regression_test(df_train, df_eval):
+    pipeline = Pipeline(stages=[indexer, encoder, assemlber])
 
-    rf = RandomForestRegressor(featuresCol='features', labelCol='AveragePrice', numTrees=100, maxDepth=5, maxBins=70)
-    rf_model = rf.fit(df_train)
+    preprocessed_df = pipeline.fit(df).transform(df)
+    
+    return preprocessed_df
 
-    rf_pred = rf_model.transform(df_eval)
-
-    rf_pred.show(10)
-
-    evaluator_rmse = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="rmse")
-    rf_rmse = evaluator_rmse.evaluate(rf_pred)
-
-    evaluator_r2 = RegressionEvaluator(labelCol="AveragePrice")
-    rf_r2 = evaluator_r2.evaluate(rf_pred, {evaluator_r2.metricName: "r2"})
-
-    evaluator_mae = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="mae")
-    rf_mae = evaluator_mae.evaluate(rf_pred)
-
-    print(f"RandomForest RMSE: {rf_rmse}")
-    print(f"RandomForest R2: {rf_r2}")
-    print(f"RandomForest MAE: {rf_mae}")
-
-    return (rf_rmse, rf_r2, rf_mae)
 
 
 if __name__ == '__main__' : 
 
-    if(model == RegressionModels.LINEAR_REGRESSION):
     #Preprocessing
-        df = df.withColumn("year", sql_fun.year("Date")).withColumn("month", sql_fun.month("Date"))
-        preprocessed_df = linear_regression_data_preprocessing()
+    df = df.withColumn("year", sql_fun.year("Date")).withColumn("month", sql_fun.month("Date"))
 
-        #train test split
-        df_train, df_eval = preprocessed_df.randomSplit([0.8, 0.2], 42)
+    #remove outliers
+    df = IQR()
 
-        #group into batches
-        sorted_df = df_train.orderBy("Date")
-        batches = sorted_df.groupBy("year", "month").agg(sql_fun.collect_list("features").alias("monthly features"), sql_fun.collect_list("AveragePrice").alias("monthly prices")) #now our batches consist of data generated over the period of each month
+    #encode categorical features
+    indexer = StringIndexer(inputCol="type", outputCol="type_index")
+    encoder = OneHotEncoder(inputCol="type_index", outputCol="type_encoded")
 
-        #prepare LinearRegression Model and evaluator
-        linRegr = LinearRegression(featuresCol="features", labelCol="AveragePrice")
-        evaluator = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="rmse")
-
-        cumulative_train_data = spark.createDataFrame([], df_train.select("features", "AveragePrice").schema) #we will store cumulative training results here
-
-        for batch in batches.collect():
-            year, month, monthly_features, monthly_prices = batch["year"], batch["month"], batch["monthly features"], batch["monthly prices"]
-
-            #create batch dataframe
-            batch_df = spark.createDataFrame(zip(monthly_features, monthly_prices), schema=["features", "AveragePrice"])
-
-            cumulative_train_data = cumulative_train_data.union(batch_df)
-
-            model = linRegr.fit(cumulative_train_data)
-            
-            #check the results for each iteration
-            predictions = model.transform(df_eval)
-            rmse = evaluator.evaluate(predictions)
-            
-            #view iteration predictions
-            predictions.select("Date", "AveragePrice", "prediction").show(5, truncate=False)
-
-            #view iteration rmse
-            print(f"After training on {year}-{month}, RMSE on test set: {rmse}")
+    if(model == RegressionModels.LINEAR_REGRESSION):
+        preprocessed_df = linear_regression_preprocessing()
+        estimator = LinearRegression(featuresCol="features", labelCol="AveragePrice")
 
     elif (model == RegressionModels.RANDOM_FOREST):
-        #Random Forest preprocess and training here
-        pass
-    
+        preprocessed_df = random_forest_processing()
+        estimator = RandomForestRegressor(featuresCol="features", labelCol="AveragePrice", numTrees=100)
+
     elif (model == RegressionModels.XGBOOST):
         #XGboost here
         pass
 
     else:
-        #test block here
+        #test block
         df.select("Date").groupBy("Date").count().orderBy("Date").show()
+        exit()
 
+    #train test split
+    df_train, df_eval = preprocessed_df.randomSplit([0.8, 0.2], 42)
 
+    #group into batches
+    sorted_df = df_train.orderBy("Date")
+    batches = sorted_df.groupBy("year", "month").agg(sql_fun.collect_list("features").alias("monthly features"), sql_fun.collect_list("AveragePrice").alias("monthly prices")) #now our batches consist of data generated over the period of each month
 
-    # #COMBINING FEATURES
+    #prepare LinearRegression Model and evaluator
 
-    # vect = VectorAssembler(inputCols=df.columns[1:], outputCol="features")
-    # df_train = vect.transform(df_train)
-    # df_eval = vect.transform(df_eval)
+    evaluator = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="rmse")
 
-    # df_train = df_train.select("AveragePrice", "features")
-    # df_train.show(10)
+    cumulative_train_data = spark.createDataFrame([], df_train.select("features", "AveragePrice").schema) #we will store cumulative training results here
 
-    # #FEATURE SCALING
+    for batch in batches.collect():
+        year, month, monthly_features, monthly_prices = batch["year"], batch["month"], batch["monthly features"], batch["monthly prices"]
 
-    # scaler = StandardScaler(inputCol="features", outputCol="scaledFeatures")
-    # scaler_model = scaler.fit(df_train)
-    # df_train = scaler_model.transform(df_train)
-    # df_eval = scaler_model.transform(df_eval)
+        #create batch dataframe
+        batch_df = spark.createDataFrame(zip(monthly_features, monthly_prices), schema=["features", "AveragePrice"])
 
-    # df_train = df_train.select("AveragePrice", "features", "scaledFeatures")
+        cumulative_train_data = cumulative_train_data.union(batch_df)
 
-    # df_train.show(10)
+        model = estimator.fit(cumulative_train_data)
+        
+        #check the results for each iteration
+        predictions = model.transform(df_eval)
+        rmse = evaluator.evaluate(predictions)
+        
+        #view iteration predictions
+        predictions.select("Date", "AveragePrice", "prediction").show(5, truncate=False)
 
-    # #
-
-    # #RANDOM FOREST REGRESSOR MODEL
-
-    # results = random_forest_regression_test(df_train, df_eval)
-
-    # #XGBoost
-    ...
+        #view iteration rmse
+        print(f"After training on {year}-{month}, RMSE on test set: {rmse}")
 
     spark.sparkContext.stop()
 
