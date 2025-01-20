@@ -20,15 +20,17 @@ class RegressionModels(Enum):
 
 #core variables
 spark = SparkSession.builder.appName("avocado_price_prediction").getOrCreate()
-df = spark.read.csv("Augmented_avocado.csv", sep = ",", header=True, inferSchema = True).drop("Unnamed: 0")
-numerical_features = ["Total Volume", "4046", "4225", "4770", "Total Bags", "year", "month"]
-input_features = list(numerical_features)
+df = spark.read.csv("Augmented_avocado.csv", sep = ",", header=True, inferSchema = True).drop("Unnamed: 0") #Dataset Load from file https://www.kaggle.com/datasets/mathurinache/avocado-augmented
+numerical_features = ["Total Volume", "4046", "4225", "4770", "Total Bags", "year", "month"] #numerical features we consider in model training
+
+input_features = list(numerical_features) #numerical and categorical features we consider in model training (categorical should be converted to numerical in preprocesing phase)
 input_features.append("type_encoded")
-model = RegressionModels.XGBOOST
+
+model = RegressionModels.XGBOOST #we choose regression method here
 
 
 #functions
-def IQR():
+def IQR(): #Interquantile Range - outlier removal method. It removes values which are beyond specified range
 
     quantiles = df.approxQuantile("AveragePrice", [0.25, 0.75], 0.05)
     Q1 = quantiles[0]
@@ -44,7 +46,7 @@ def IQR():
 
     return filtered_df
 
-def replace_date_with_seasons(df):
+def replace_date_with_seasons(df): #generates additional information about seasons (not in use at this moment)
 
     #create month column
     df = df.withColumn("month", sql_fun.month(sql_fun.col("Date")))
@@ -77,7 +79,7 @@ def replace_date_with_seasons(df):
 
     return df_seasons
 
-def linear_regression_preprocessing():
+def linear_regression_preprocessing(): #preprocesing for Linear Regression (includes Standard Scaler usage). Returns preprocessed dataset
 
     #scale numerical features
     numerical_assembler = VectorAssembler(inputCols=numerical_features, outputCol="numerical_features")
@@ -93,7 +95,7 @@ def linear_regression_preprocessing():
     
     return preprocessed_df
 
-def random_forest_and_xgb_processing(): #we skipped here standard scaler because it is not needed for RandomForest Model
+def random_forest_and_xgb_processing(): #Like above but we skipped here Standard Scaler because it is not needed in RandomForest and XGBoost
     #create features vector 
     assemlber = VectorAssembler(inputCols=input_features, outputCol="features")
 
@@ -104,10 +106,9 @@ def random_forest_and_xgb_processing(): #we skipped here standard scaler because
     return preprocessed_df
 
 
-
 if __name__ == '__main__' : 
 
-    #Preprocessing
+    #Add month and year columns to dataset
     df = df.withColumn("year", sql_fun.year("Date")).withColumn("month", sql_fun.month("Date"))
 
     #remove outliers
@@ -117,6 +118,7 @@ if __name__ == '__main__' :
     indexer = StringIndexer(inputCol="type", outputCol="type_index")
     encoder = OneHotEncoder(inputCol="type_index", outputCol="type_encoded")
 
+    #Based on selected RegresionModel method, preprocessing might be different (different estimator selected)
     if(model == RegressionModels.LINEAR_REGRESSION):
         preprocessed_df = linear_regression_preprocessing()
         estimator = LinearRegression(featuresCol="features", labelCol="AveragePrice")
@@ -127,7 +129,7 @@ if __name__ == '__main__' :
 
     elif (model == RegressionModels.XGBOOST):
         preprocessed_df = random_forest_and_xgb_processing()
-        estimator = SparkXGBRegressor(features_col="features", label_col="AveragePrice", prediction_col="prediction", maxDepth=6, eta=0.1, numRound=100, objective="reg:squarederror")
+        estimator = SparkXGBRegressor(features_col="features", label_col="AveragePrice", prediction_col="prediction", eta=0.1, objective="reg:squarederror")
     else:
         #test block
         df.select("Date").groupBy("Date").count().orderBy("Date").show()
@@ -136,35 +138,45 @@ if __name__ == '__main__' :
     #train test split
     df_train, df_eval = preprocessed_df.randomSplit([0.8, 0.2], 42)
 
-    #group into batches
-    sorted_df = df_train.orderBy("Date")
-    batches = sorted_df.groupBy("year", "month").agg(sql_fun.collect_list("features").alias("monthly features"), sql_fun.collect_list("AveragePrice").alias("monthly prices")) #now our batches consist of data generated over the period of each month
+    #we need to sort both datasets chronoligicaly
+    sorted_train = df_train.orderBy("Date")
+    sorted_eval = df_eval.orderBy("Date")
 
-    #prepare LinearRegression Model and evaluator
+    #then we extract available month-year pairs based on train dataset (model learns based on those dates so those points should be verified with test data)
+    year_month_pairs = sorted_train.select("year", "month").distinct().orderBy("year", "month").collect()
 
     evaluator = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="rmse")
 
-    cumulative_train_data = spark.createDataFrame([], df_train.select("features", "AveragePrice").schema) #we will store cumulative training results here
-
-    for batch in batches.collect():
-        year, month, monthly_features, monthly_prices = batch["year"], batch["month"], batch["monthly features"], batch["monthly prices"]
-
-        #create batch dataframe
-        batch_df = spark.createDataFrame(zip(monthly_features, monthly_prices), schema=["features", "AveragePrice"])
-
-        cumulative_train_data = cumulative_train_data.union(batch_df)
-
-        model = estimator.fit(cumulative_train_data)
+    #enumerate based on gathered month-year pairs
+    for idx, row in enumerate(year_month_pairs[:-1]):  # Exclude the last pair
         
-        #check the results for each iteration
-        predictions = model.transform(df_eval)
-        rmse = evaluator.evaluate(predictions)
-        
-        #view iteration predictions
-        predictions.select("Date", "AveragePrice", "prediction").show(5, truncate=False)
+        #year, month for traing batch
+        year, month = row["year"], row["month"]
 
-        #view iteration rmse
-        print(f"After training on {year}-{month}, RMSE on test set: {rmse}")
+        #next_year, next month for evaluation batch
+        next_year, next_month = year_month_pairs[idx + 1]["year"], year_month_pairs[idx + 1]["month"]
+
+        # Train on the current month
+        train_batch = sorted_train.filter((sorted_train["year"] == year) & (sorted_train["month"] == month))
+        model = estimator.fit(train_batch)
+
+        # Test on the next month
+        test_batch = sorted_eval.filter((sorted_eval["year"] == next_year) & (sorted_eval["month"] == next_month))
+
+        if test_batch.count() > 0:  # Ensure there's test data for the next month
+            predictions = model.transform(test_batch)
+
+            rmse = evaluator.evaluate(predictions)
+            
+            #view representative samples
+            # predictions.select("Date", "AveragePrice", "prediction").show(5, truncate=False)
+            
+            #view avg - returns small dataset representing expected and achieved avg prices for days in month when samples was taken.
+            predictions_avg = predictions.select("Date", "AveragePrice", "prediction").groupBy("Date").agg(sql_fun.avg("AveragePrice").alias("avgAveragePrice"), sql_fun.avg("prediction").alias("avg_prediction"))
+            predictions_avg.show(truncate=False)
+
+            #view iteration rmse - value representing percent deviation between expected and result value [0-100] 10-30 is aceptable. Better visible in representative samples rather than avg values.
+            print(f"After training on {year}-{month}, RMSE on test set: {rmse}")
 
     spark.sparkContext.stop()
 
