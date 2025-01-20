@@ -26,7 +26,7 @@ numerical_features = ["Total Volume", "4046", "4225", "4770", "Total Bags", "yea
 input_features = list(numerical_features) #numerical and categorical features we consider in model training (categorical should be converted to numerical in preprocesing phase)
 input_features.append("type_encoded")
 
-model = RegressionModels.RANDOM_FOREST #we choose regression method here
+model = RegressionModels.XGBOOST #we choose regression method here
 
 
 #functions
