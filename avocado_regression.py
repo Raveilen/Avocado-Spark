@@ -12,6 +12,9 @@ from pyspark.ml.evaluation import RegressionEvaluator
 from xgboost import XGBRegressor
 from xgboost.spark import SparkXGBRegressor
 
+from kafka_handler import KafkaSend
+
+
 class RegressionModels(Enum):
     LINEAR_REGRESSION = 1
     RANDOM_FOREST = 2
@@ -147,8 +150,13 @@ if __name__ == '__main__' :
 
     evaluator = RegressionEvaluator(labelCol="AveragePrice", predictionCol="prediction", metricName="rmse")
 
+    #print(f"\n CHECK LEN ({len(year_month_pairs[:-35])})")
+
+    # Create instance of Kafka Producer
+    kafka_sender = KafkaSend()
+
     #enumerate based on gathered month-year pairs
-    for idx, row in enumerate(year_month_pairs[:-1]):  # Exclude the last pair
+    for idx, row in enumerate(year_month_pairs[:-35]):  # Exclude the last pair
         
         #year, month for traing batch
         year, month = row["year"], row["month"]
@@ -173,11 +181,25 @@ if __name__ == '__main__' :
             
             #view avg - returns small dataset representing expected and achieved avg prices for days in month when samples was taken.
             predictions_avg = predictions.select("Date", "AveragePrice", "prediction").groupBy("Date").agg(sql_fun.avg("AveragePrice").alias("avgAveragePrice"), sql_fun.avg("prediction").alias("avg_prediction"))
+            
+            # Order values by Date
+            predictions_avg = predictions_avg.orderBy(['Date'], ascending = ['False'])
             predictions_avg.show(truncate=False)
+
+            # Change Spark DataFrame to Json
+            predictions_avg_json = predictions_avg.toJSON().collect()
+            #print(f"Json : {predictions_avg_json}")
+
+            # Send Json objects to Kafka broker
+            for obj in predictions_avg_json:
+                print(f"Json obj : {obj}")
+                kafka_sender.send_message(obj)
+
 
             #view iteration rmse - value representing percent deviation between expected and result value [0-100] 10-30 is aceptable. Better visible in representative samples rather than avg values.
             print(f"After training on {year}-{month}, RMSE on test set: {rmse}")
 
+    kafka_sender.close()
     spark.sparkContext.stop()
 
     
