@@ -20,7 +20,7 @@ for val in kafka_consumer.receive_message():
 
     #print(f' yield val : {val}')
 
-    data = json.loads(val)
+    data = json.loads(val).copy()
 
     if counter > 15:
         break
@@ -38,17 +38,17 @@ for val in kafka_consumer.receive_message():
     plt.plot(x_date, y_predict_data, marker = '^', color = 'blue')
 
     # Set plot legend
-    plt.legend(["Average price", "Predicted average"], loc="upper right")
+    plt.legend(["Real price", "Predicted price"], loc="upper right")
     
     # Set plot attributes
-    plt.title("Avocado prices over time")
+    plt.title("Avocado average prices over time")
     plt.xlabel("Date")
     plt.xticks(rotation=90)
     plt.ylabel("Price of avocado")
 
     # Draw plot
     plt.draw()
-    plt.pause(0.4)
+    plt.pause(1)
     plt.clf()
 
 
