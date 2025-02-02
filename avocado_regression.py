@@ -100,9 +100,9 @@ def linear_regression_preprocessing(): #preprocesing for Linear Regression (incl
 
 def random_forest_and_xgb_processing(): #Like above but we skipped here Standard Scaler because it is not needed in RandomForest and XGBoost
     #create features vector 
-    assemlber = VectorAssembler(inputCols=input_features, outputCol="features")
+    assembler = VectorAssembler(inputCols=input_features, outputCol="features")
 
-    pipeline = Pipeline(stages=[indexer, encoder, assemlber])
+    pipeline = Pipeline(stages=[indexer, encoder, assembler])
 
     preprocessed_df = pipeline.fit(df).transform(df)
     
